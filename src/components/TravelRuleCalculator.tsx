@@ -25,25 +25,12 @@ const TravelRuleCalculator: React.FC = () => {
   const [amountInput, setAmountInput] = useState<string>('');
   const [result, setResult] = useState<ComplianceResult | null>(null);
   const [showDebug, setShowDebug] = useState(false);
+  const [hoveredField, setHoveredField] = useState<string | null>(null);
+
 
   // ===================================================================
   // EFFECTS
   // ===================================================================
-
-  // Auto-calculate compliance on input change
-  // useEffect(() => {
-  //   if (input.transfer_amount > 0) {
-  //     try {
-  //       const calculatedResult = calculateCompliance(input);
-  //       setResult(calculatedResult);
-  //     } catch (error) {
-  //       console.error('Calculation error:', error);
-  //       setResult(null);
-  //     }
-  //   } else {
-  //     setResult(null);
-  //   }
-  // }, [input]);
   useEffect(() => {
     if (Number.isFinite(input.transfer_amount) && input.transfer_amount > 0) {
       try {
@@ -53,6 +40,9 @@ const TravelRuleCalculator: React.FC = () => {
         console.error('Calculation error:', error);
         setResult(null);
       }
+    } else {
+        // If amount is 0 or invalid, clear previous results
+        setResult(null);
     }
   }, [input]);
 
@@ -68,23 +58,34 @@ const TravelRuleCalculator: React.FC = () => {
   };
 
   const handleAmountChange = (value: string) => {
-    // Remove leading zeros and handle empty string
-    const cleanValue = value.replace(/^0+/, '') || '0';
-    setAmountInput(cleanValue);
-    
-    // Convert to number for calculations
-    const numericValue = parseFloat(cleanValue) || 0;
-    handleInputChange('transfer_amount', numericValue);
-  };
+    // Sanitize to allow only numbers and a single decimal point.
+    // This regex removes any character that is not a digit or a dot,
+    // and then removes any subsequent dots after the first one.
+    const sanitizedValue = value.replace(/[^0-9.]/g, '').replace(/(\..*?)\./g, '$1');
 
-  const handleAmountFocus = () => {
-    //setAmountInput('');
-    //handleInputChange('transfer_amount', 0);
+    setAmountInput(sanitizedValue);
+    
+    // Convert to number for calculations, defaulting to 0 if invalid.
+    const numericValue = parseFloat(sanitizedValue);
+    handleInputChange('transfer_amount', isNaN(numericValue) ? 0 : numericValue);
   };
 
   // ===================================================================
   // UTILITY FUNCTIONS
   // ===================================================================
+  
+  const getMatchCounterpart = (field: string): string | null => {
+      if (!result) return null;
+      // For combo fields, we need to check both parts
+      if (field === 'date_of_birth + birthplace') {
+          const dobMatch = result.field_analysis.field_matches.find(m => m.sumsubField === 'date_of_birth' || m.counterpartyField === 'date_of_birth');
+          const pobMatch = result.field_analysis.field_matches.find(m => m.sumsubField === 'birthplace' || m.counterpartyField === 'birthplace');
+          return (dobMatch && pobMatch) ? 'matched' : null;
+      }
+      const match = result.field_analysis.field_matches.find(m => m.sumsubField === field || m.counterpartyField === field);
+      if (!match) return null;
+      return match.sumsubField === field ? match.counterpartyField : match.sumsubField;
+  };
 
   const getCurrentCurrency = () => {
     const country = countries.find(c => c.code === input.sumsub_vasp_country);
@@ -134,15 +135,42 @@ const TravelRuleCalculator: React.FC = () => {
     </div>
   );
 
-  const renderFieldBadges = (fields: string[], colorClass: string = 'bg-blue-100 text-blue-700') => (
+  const renderFieldBadges = (fields: string[], colorClass: string = 'bg-blue-100 text-blue-700', interactive: boolean = true) => (
     <div className="flex flex-wrap gap-2">
-      {fields.map(field => (
-        <span key={field} className={`px-3 py-1 ${colorClass} text-sm rounded-full font-medium`}>
-          {getFieldLabel(field)}
-        </span>
-      ))}
+      {fields.map(field => {
+        if (!interactive) {
+          return (
+            <span key={field} className={`px-3 py-1 ${colorClass} text-sm rounded-full font-medium`}>
+              {getFieldLabel(field)}
+            </span>
+          );
+        }
+
+        const counterpart = getMatchCounterpart(field);
+        const isHovered = hoveredField === field || (counterpart && hoveredField === counterpart);
+        const isUnprovided = !counterpart;
+        const borderColorClass = isUnprovided ? 'border-orange-500' : (colorClass.includes('purple') ? 'border-purple-500' : 'border-blue-500');
+        
+        return (
+          <div key={field} className="relative group" onMouseEnter={() => setHoveredField(field)} onMouseLeave={() => setHoveredField(null)}>
+            <span
+              className={`block px-3 py-1 ${colorClass} text-sm rounded-full font-medium transition-all duration-300 ease-in-out cursor-pointer border-2 ${
+                isHovered ? `scale-105 ${borderColorClass}` : 'border-transparent'
+              }`}
+            >
+              {getFieldLabel(field)}
+            </span>
+            {/* {isUnprovided && isHovered && (
+                <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1 px-2 py-0.5 bg-gray-700 text-white text-xs rounded shadow-lg whitespace-nowrap z-10">
+                    not provided
+                </div>
+            )} */}
+          </div>
+        );
+      })}
     </div>
   );
+
 
   // ===================================================================
   // OR GROUP RENDERING
@@ -153,87 +181,87 @@ const TravelRuleCalculator: React.FC = () => {
       fields.includes('id_document_number') && 
       fields.includes('customer_id') &&
       fields.includes('date_of_birth') && 
-      fields.includes('birthplace');
+      fields.includes('birthplace'); 
   };
     
   const renderOrGroupBadges = (group: any, groupIndex: number, matchedField?: string) => {
-    // Check if this is a DEU-style OR group with 4 specific fields
-    const isGroupDeu = isDeuOrGroup(group.fields);
+    const isGroupSatisfied = !!matchedField;
+
+    const renderBadge = (field: string, displayContent: React.ReactNode) => {
+        const isMatched = matchedField === field;
+        const isDimmed = isGroupSatisfied && !isMatched;
+
+        const isCombo = field.includes('+');
+        const counterpart = getMatchCounterpart(field);
+        const isDeuComboHovered = () => {
+            if (!isCombo) return false;
+            if (hoveredField === field) return true;
+            const counterpartDob = getMatchCounterpart('date_of_birth');
+            const counterpartPob = getMatchCounterpart('birthplace');
+            return (counterpartDob && hoveredField === counterpartDob) || (counterpartPob && hoveredField === counterpartPob);
+        };
+        const isHovered = !isDimmed && (hoveredField === field || (counterpart && hoveredField === counterpart) || isDeuComboHovered());
+        //const isUnprovided = !isMatched && !counterpart;
+
+        const colorClass = isMatched ? 'bg-green-100 text-green-700' : isDimmed ? 'bg-gray-200 text-gray-500' : 'bg-gray-100 text-gray-600';
+        const cursorClass = isDimmed ? 'cursor-not-allowed' : 'cursor-pointer';
+        const borderColorClass = isMatched ? 'border-green-500' : 'border-orange-500';
+
+        return (
+            <div
+                key={field}
+                className="relative group"
+                onMouseEnter={() => !isDimmed && setHoveredField(field)}
+                onMouseLeave={() => !isDimmed && setHoveredField(null)}
+            >
+                <div
+                    className={`inline-block px-3 py-1 text-sm rounded-full font-medium transition-all duration-300 ease-in-out border-2 ${colorClass} ${cursorClass} ${
+                        isHovered ? `scale-105 ${borderColorClass}` : 'border-transparent'
+                    } ${isDimmed ? 'opacity-60' : ''}`}
+                >
+                    {displayContent}
+                    {isMatched && <span className="ml-1">✓</span>}
+                </div>
+                {/* {isUnprovided && isHovered && (
+                    <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1 px-2 py-0.5 bg-gray-700 text-white text-xs rounded shadow-lg whitespace-nowrap z-10">
+                        not provided
+                    </div>
+                )} */}
+            </div>
+        );
+    };
 
     return (
-      <div className="p-3 bg-gray-50 border border-gray-200 rounded-lg">
-        <div className="flex items-center gap-2 mb-2">
-          <span className="text-sm text-gray-600">
-            One of the following:
-          </span>
+        <div className="p-3 bg-gray-50 border border-gray-200 rounded-lg">
+            <div className="flex items-center gap-2 mb-2">
+                <span className="text-sm text-gray-600">And one of these:</span>
+            </div>
+            
+            <div className="flex flex-wrap items-center gap-2">
+                {isDeuOrGroup(group.fields) ? (
+                    <>
+                        {renderBadge('id_document_number', getFieldLabel('id_document_number'))}
+                        {renderBadge('customer_id', getFieldLabel('customer_id'))}
+                        {renderBadge('date_of_birth + birthplace', 
+                            <span className="flex items-center gap-1">
+                                <span>{getFieldLabel('date_of_birth')}</span>
+                                <span className="text-xs">+</span>
+                                <span>{getFieldLabel('birthplace')}</span>
+                            </span>
+                        )}
+                    </>
+                ) : (
+                    group.fields.map((field: string) => renderBadge(field, getFieldLabel(field)))
+                )}
+            </div>
+            
+            {/* Additional highlight */}
+            {/* {matchedField && (
+                <div className="mt-2 text-xs text-green-600">
+                    ✓ Matched with: {matchedField.includes('+') ? matchedField : getFieldLabel(matchedField)}
+                </div>
+            )} */}
         </div>
-        
-        {isGroupDeu ? (
-          // Special rendering for DEU OR group with three alternatives
-          <div className="space-y-2">
-            {/* Option 1: ID Document Number */}
-            <div className={`inline-block px-3 py-1 text-sm rounded-full font-medium transition-all mr-2 ${
-              matchedField === 'id_document_number'
-                ? 'bg-green-100 text-green-700 ring-2 ring-green-300' 
-                : 'bg-gray-100 text-gray-600'
-            }`}>
-              {getFieldLabel('id_document_number')}
-              {matchedField === 'id_document_number' && <span className="ml-1">✓</span>}
-            </div>
-            
-            {/* Option 2: Customer Internal ID */}
-            <div className={`inline-block px-3 py-1 text-sm rounded-full font-medium transition-all mr-2 ${
-              matchedField === 'customer_id'
-                ? 'bg-green-100 text-green-700 ring-2 ring-green-300' 
-                : 'bg-gray-100 text-gray-600'
-            }`}>
-              {getFieldLabel('customer_id')}
-              {matchedField === 'customer_id' && <span className="ml-1">✓</span>}
-            </div>
-            
-            {/* Option 3: Date of Birth + Place of Birth combination */}
-            <div className={`inline-block px-3 py-1 text-sm rounded-full font-medium transition-all ${
-              matchedField === 'date_of_birth + birthplace'
-                ? 'bg-green-100 text-green-700 ring-2 ring-green-300' 
-                : 'bg-gray-100 text-gray-600'
-            }`}>
-              <span className="flex items-center gap-1">
-                <span>{getFieldLabel('date_of_birth')}</span>
-                <span className="text-xs">+</span>
-                <span>{getFieldLabel('birthplace')}</span>
-                {matchedField === 'date_of_birth + birthplace' && <span className="ml-1">✓</span>}
-              </span>
-            </div>
-          </div>
-        ) : (
-          // Regular OR group rendering for other cases
-          <div className="flex flex-wrap gap-2">
-            {group.fields.map((field: string) => {
-              const isMatched = matchedField === field;
-              return (
-                <span 
-                  key={field} 
-                  className={`px-3 py-1 text-sm rounded-full font-medium transition-all ${
-                    isMatched 
-                      ? 'bg-green-100 text-green-700 ring-2 ring-green-300' 
-                      : 'bg-gray-100 text-gray-600'
-                  }`}
-                >
-                  {getFieldLabel(field)}
-                  {isMatched && <span className="ml-1">✓</span>}
-                </span>
-              );
-            })}
-          </div>
-        )}
-        
-        {/* Show match confirmation */}
-        {matchedField && (
-          <div className="mt-2 text-xs text-green-600">
-            ✓ Matched with: {matchedField.includes('+') ? matchedField : getFieldLabel(matchedField)}
-          </div>
-        )}
-      </div>
     );
   };
 
@@ -294,7 +322,7 @@ const TravelRuleCalculator: React.FC = () => {
     <div className="space-y-3">
       {fieldMatches.map((match, index) => {
         const isStrictExact = match.isExactMatch && !match.isOrGroupMatch;
-
+        
         return (
           <div
             key={index}
@@ -304,13 +332,17 @@ const TravelRuleCalculator: React.FC = () => {
           >
             {/* Sumsub Field */}
             <div className="flex-1">
-              <span className="px-3 py-1 bg-blue-100 text-blue-700 text-sm rounded-full font-medium">
+              <span
+                onMouseEnter={() => setHoveredField(match.sumsubField)}
+                onMouseLeave={() => setHoveredField(null)}
+                className="px-3 py-1 bg-blue-100 text-blue-700 text-sm rounded-full font-medium"
+              >
                 {getFieldLabel(match.sumsubField)}
               </span>
             </div>
 
             {/* Connection Indicator */}
-            <div className="flex items-center gap-2">
+            <div className="shrink-0 flex items-center gap-2">
               {isStrictExact ? (
                 <>
                   <div className="w-2 h-2 bg-green-500 rounded-full"></div>
@@ -328,7 +360,11 @@ const TravelRuleCalculator: React.FC = () => {
 
             {/* Counterparty Field */}
             <div className="flex-1 text-right">
-              <span className="px-3 py-1 bg-purple-100 text-purple-700 text-sm rounded-full font-medium">
+              <span
+                onMouseEnter={() => setHoveredField(match.counterpartyField)}
+                onMouseLeave={() => setHoveredField(null)}
+                className="px-3 py-1 bg-purple-100 text-purple-700 text-sm rounded-full font-medium"
+              >
                 {getFieldLabel(match.counterpartyField)}
               </span>
             </div>
@@ -489,10 +525,10 @@ const TravelRuleCalculator: React.FC = () => {
               <div className="relative">
                 <input
                   type="text"
+                  inputMode="decimal"
                   className="w-full px-4 py-3 pr-16 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors"
                   value={amountInput}
                   onChange={(e) => handleAmountChange(e.target.value)}
-                  onFocus={handleAmountFocus}
                   placeholder={`Enter amount in ${getCurrentCurrency()}`}
                 />
                 <div className="absolute right-3 top-1/2 transform -translate-y-1/2 px-2 py-1 bg-gray-100 rounded text-sm font-medium text-gray-600">
@@ -628,7 +664,7 @@ const TravelRuleCalculator: React.FC = () => {
                 )}
 
                 {/* Other Analysis Sections */}
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   
                   {/* Extra Fields */}
                   {(result.field_analysis.sumsub_sends_more.length > 0 || result.field_analysis.counterparty_sends_more.length > 0) && (
@@ -641,7 +677,8 @@ const TravelRuleCalculator: React.FC = () => {
                       </div>
                       {renderFieldBadges(
                         input.transfer_direction === 'OUT' ? result.field_analysis.sumsub_sends_more : result.field_analysis.counterparty_sends_more,
-                        'bg-blue-100 text-blue-700'
+                        'bg-blue-100 text-blue-700',
+                        false
                       )}
                       <p className="text-xs text-blue-600 mt-2">Overcompliance - acceptable</p>
                     </div>
@@ -656,7 +693,7 @@ const TravelRuleCalculator: React.FC = () => {
                           Missing Fields ({result.field_analysis.missing_fields.length})
                         </span>
                       </div>
-                      {renderFieldBadges(result.field_analysis.missing_fields, 'bg-orange-100 text-orange-700')}
+                      {renderFieldBadges(result.field_analysis.missing_fields, 'bg-orange-100 text-orange-700', false)}
                       <p className="text-xs text-orange-600 mt-2">
                         {input.transfer_direction === 'OUT' 
                           ? 'Counterparty may request additional data'
@@ -719,7 +756,7 @@ const TravelRuleCalculator: React.FC = () => {
                   </span>
                 </div>
               ) : (
-                renderFieldBadges(group.fields, 'bg-gray-100 text-gray-700')
+                renderFieldBadges(group.fields, 'bg-gray-100 text-gray-700', false)
               )}
             </div>
           ))}
@@ -756,7 +793,7 @@ const TravelRuleCalculator: React.FC = () => {
                   </span>
                 </div>
               ) : (
-                renderFieldBadges(group.fields, 'bg-gray-100 text-gray-700')
+                renderFieldBadges(group.fields, 'bg-gray-100 text-gray-700', false)
               )}
             </div>
           ))}
